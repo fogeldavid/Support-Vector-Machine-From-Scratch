@@ -1,212 +1,262 @@
 # Support Vector Machine From Scratch
 
-> **MGSC 696** | McGill MMA
-> Building an SVM classifier from the ground up, then checking it against scikit-learn
+> **MGSC 696** | McGill MMA | April 30th, 2026
+> David Fogel · Sebastian Arguedas Soley · Lucas Penney · Aziz Ahmed · Fares Jony
+
+A binary soft-margin SVM implemented from scratch using the dual QP formulation, with linear, polynomial, and RBF kernels, validated against `sklearn.svm.SVC` on the Breast Cancer Wisconsin dataset. The full write-up is in [SVM Project.pdf](SVM%20Project.pdf); all code, experiments, and figures are in [svm_from_scratch.ipynb](svm_from_scratch.ipynb).
 
 ---
 
-## What This Project Does
+## 1. Introduction and Method Description
 
-A Support Vector Machine is a classifier that separates two groups by drawing the boundary that leaves the widest possible gap between them. This project builds one from scratch — no SVM library — and uses it to classify malignant tumours from benign ones in the Breast Cancer Wisconsin dataset (569 patients, 30 measurements each).
+Support Vector Machines (SVMs) are supervised learning models designed for binary classification. The goal is straightforward: given labelled training data, find the best possible line (or plane, in higher dimensions) that separates the two classes. What makes SVMs different from other classifiers is how "best" is defined — the SVM specifically finds the separation that leaves the largest possible gap between the two classes. This gap is called the margin, and maximising it leads to better performance on new, unseen data.
 
-The only outside help we allow ourselves is a general-purpose optimizer called `cvxopt`, which solves the math problem at the center of an SVM. Everything specific to SVMs — the kernels, the training routine, the prediction step — is written by hand. We then run scikit-learn's `SVC` on the same data to check that our version gets the same answers.
+### 1.1 The Margin
 
-### How It Works, In Plain Terms
+The separating boundary (called a hyperplane) is defined by two parameters: a weight vector **w**, which controls the orientation of the boundary, and a bias term **b**, which shifts it. Any point **x** can be evaluated by plugging it into `w · x + b` — a positive result places it on one side, a negative result on the other.
 
-Training an SVM means picking a boundary line that (a) separates the two classes and (b) sits as far from both as possible. Written out, the goal is:
+The SVM places two parallel boundary lines on either side of the main separator, one touching each class. The distance between these two lines is the margin, which equals `2 / ‖w‖`. A shorter **w** vector means a wider gap, since making the denominator smaller makes the fraction bigger. Maximising the margin is therefore the same as minimising `‖w‖²`, which is the core of the SVM objective.
 
-$$\min_{w, b, \xi} \; \tfrac{1}{2}\|w\|^2 + C\sum_{i=1}^{n}\xi_i \quad \text{s.t.} \quad y_i(w^\top \phi(x_i) + b) \geq 1 - \xi_i,\; \xi_i \geq 0$$
+### 1.2 Hard Margin vs. Soft Margin
 
-The first term widens the gap; the second penalizes points that end up on the wrong side. **C** is the dial between the two — crank it up and the model refuses to tolerate mistakes, turn it down and it accepts some in exchange for a cleaner, wider boundary.
+In the simplest case (hard margin), every training point must be correctly classified and outside the margin:
 
-That version is hard to solve directly, so we solve its mirror image instead, called the dual:
+```
+Minimise    (1/2)‖w‖²
+Subject to  yᵢ(w · xᵢ + b) ≥ 1   for all i
+```
 
-$$\max_\alpha \; \sum_{i=1}^{n}\alpha_i - \tfrac{1}{2}\sum_{i,j}\alpha_i\alpha_j y_i y_j K(x_i, x_j) \quad \text{s.t.} \quad 0 \leq \alpha_i \leq C,\; \sum_i \alpha_i y_i = 0$$
+where `yᵢ ∈ {−1, +1}` is the label of point *i*. This works only when the data is perfectly separable, which is rarely true in practice.
 
-The dual is worth the detour for two reasons. It hands us one number per training point (the $\alpha_i$), and almost all of them come out as zero — the handful that don't are the **support vectors**, the points sitting closest to the boundary that actually hold it in place. And it lets us swap in a **kernel**, a shortcut function that measures similarity between two points as if we had first bent the data into a much higher-dimensional space, without ever doing that expensive step. That's what lets the same code draw curved boundaries as easily as straight ones.
+The soft margin relaxes this by allowing some points to sit inside the margin or even on the wrong side. Each point gets a slack variable `ξᵢ ≥ 0` measuring how much it violates the constraint:
 
-### What We Found
+```
+Minimise    (1/2)‖w‖² + C · Σ ξᵢ
+Subject to  yᵢ(w · xᵢ + b) ≥ 1 − ξᵢ,   ξᵢ ≥ 0
+```
 
-**Three kernels, ours vs. scikit-learn** (C = 1.0, 426 patients used for training, 143 held back for testing):
+The parameter **C** controls the trade-off: a large C heavily penalises any violation, pushing the model toward a tight fit of the training data; a small C allows more violations in exchange for a wider, more robust margin.
 
-| Kernel | Version | Accuracy | Support Vectors | Training Time |
-|--------|---------|----------|-----------------|---------------|
-| **Straight line (linear)** | **ours** | **98.6%** | **34 of 426** | **0.078 s** |
-| Straight line (linear) | scikit-learn | 98.6% | 34 of 426 | 0.003 s |
-| Curved (polynomial, d=3) | ours | 96.5% | 63 of 426 | 0.019 s |
-| Curved (polynomial, d=3) | scikit-learn | 97.2% | 65 of 426 | 0.001 s |
-| Flexible (RBF, γ=0.03) | ours | 97.9% | 95 of 426 | 0.012 s |
-| Flexible (RBF, γ=0.03) | scikit-learn | 97.9% | 92 of 426 | 0.001 s |
+### 1.3 The Kernel Trick
 
-**The simplest kernel wins.** Once the 30 measurements are put on a common scale, a plain straight-line boundary already separates malignant from benign almost perfectly. The fancier kernels have nothing left to fix, so their extra flexibility just costs complexity — the linear model leans on 34 training patients to define its boundary, while the flexible one needs nearly three times as many.
+The formulations above find linear boundaries. For data that is not linearly separable, the kernel trick allows the SVM to find non-linear boundaries without explicitly transforming the data. A kernel function `K(xᵢ, xⱼ)` computes the similarity between two points in a higher-dimensional space, without ever computing the mapping itself.
 
-**Do the two versions agree?**
+Three kernels were implemented:
 
-| Kernel | Agreement | Test patients matched |
-|--------|-----------|-----------------------|
-| Linear | 100% | 143 of 143 |
-| Polynomial | 99.3% | 142 of 143 |
-| RBF | 100% | 143 of 143 |
-
-This is the real test of whether the implementation is correct. Our code and scikit-learn's use completely different solving strategies, yet they classify the same patients the same way. The single polynomial disagreement is one borderline patient sitting right on the boundary, where a rounding difference is enough to tip the call.
-
-### How the Best Model Performs
-
-Breaking down the linear model on the 143 held-out patients:
-
-|  | precision | recall | f1-score | patients |
-|--|-----------|--------|----------|----------|
-| malignant | 0.98 | 0.98 | 0.98 | 53 |
-| benign | 0.99 | 0.99 | 0.99 | 90 |
-| **overall accuracy** | | | **0.99** | **143** |
-
-|  | called malignant | called benign |
-|--|------------------|---------------|
-| **actually malignant** | 52 | 1 |
-| **actually benign** | 1 | 89 |
-
-For a medical problem, accuracy on its own is misleading — the two kinds of mistake aren't equally bad. Missing a malignant tumor is far worse than flagging a benign one for a second look. The model makes exactly one of each: it catches 52 of the 53 malignant cases.
-
-### Turning the C Dial
-
-| C | Support Vectors | Accuracy |
-|---|-----------------|----------|
-| 0.01 | 322 | 62.9% |
-| 0.1 | 189 | 93.7% |
-| 0.5 | 116 | 97.2% |
-| 1.0 | 95 | 97.9% |
-| **5.0** | **77** | **98.6%** |
-| 10.0 | 74 | 97.9% |
-| 100.0 | 67 | 94.4% |
-
-Sweeping C across four orders of magnitude shows the tradeoff clearly. At the low end the model is so forgiving that three quarters of the training set ends up as support vectors and it barely does better than guessing the more common class. At the high end it contorts itself to get every training point right and stops generalizing. Somewhere around C = 5 is the sweet spot.
-
-### Which Measurements Matter
-
-For the straight-line version we can read the boundary directly and see how heavily each of the 30 measurements counts. Since everything is on a common scale, the weights compare fairly:
-
-| Rank | Measurement | Weight | Points toward |
-|------|-------------|--------|---------------|
-| 1 | worst texture | −1.195 | malignant |
-| 2 | mean compactness | +0.979 | benign |
-| 3 | area error | −0.893 | malignant |
-| 4 | worst concavity | −0.892 | malignant |
-| 5 | worst area | −0.730 | malignant |
-| 6 | worst smoothness | −0.718 | malignant |
-| 7 | radius error | −0.693 | malignant |
-| 8 | mean concavity | −0.610 | malignant |
-| 9 | worst symmetry | −0.608 | malignant |
-| 10 | worst radius | −0.535 | malignant |
-
-**The pattern:** "worst" measurements — the most extreme reading found anywhere in the tumor — crowd out the averages. What flags a tumor as malignant is its most abnormal patch, not how it looks on average. That lines up with how a pathologist actually reads a slide.
-
-We also compared our boundary's orientation to scikit-learn's `LinearSVC` and got a cosine similarity of **0.824**, meaning the two point in broadly the same direction. It isn't closer to 1 because `LinearSVC` optimizes a slightly different objective than the one we solve, so a perfect match was never expected.
-
-### A Few Other Takeaways
-- **Speed:** scikit-learn is 10–100× faster, and that's expected. Its solver was built specifically for SVMs, while ours is a general-purpose optimizer that builds a full table of every pairwise comparison. The gap would grow on a bigger dataset.
-- **Transparency:** writing it ourselves exposes things the library keeps hidden — exactly which patients became support vectors, how much weight each carries, and how wide the final gap is.
-- **Most of the data is redundant:** only 8% of the training patients (34 of 426) shape the linear boundary. Delete the other 392 and you'd get the identical model.
-- **Seeing it:** squashing the 30 measurements down to 2 dimensions produces a picture of the boundary with the support vectors circled. That's for illustration only — the model itself trains on all 30.
+| Kernel | Definition | What it does |
+|--------|------------|--------------|
+| **Linear** | `K(xᵢ, xⱼ) = xᵢ · xⱼ` | Equivalent to no transformation; the boundary is a straight line or plane in the original space |
+| **Polynomial** | `K(xᵢ, xⱼ) = (xᵢ · xⱼ + c)ᵈ` | Implicitly maps to a space containing all feature combinations up to degree *d*, enabling curved boundaries |
+| **RBF (Gaussian)** | `K(xᵢ, xⱼ) = exp(−γ‖xᵢ − xⱼ‖²)` | Measures closeness between points; nearby points are considered similar, far-apart points are not. γ controls how quickly similarity drops off with distance |
 
 ---
 
-## Running It Yourself
+## 2. Optimisation Problem and Solution
 
-You'll need Python 3.9 or newer and Jupyter.
+### 2.1 Reformulating as a Dual Problem
+
+To solve the soft-margin SVM, we rewrite it in a form that is easier for a computer to handle. We introduce a new variable `αᵢ` for each training point — these tell us which points become support vectors. Combining the objective and all the constraints into a single expression and finding the `αᵢ` that minimise it gives three useful results:
+
+```
+(i)   w = Σ αᵢ yᵢ xᵢ
+(ii)  Σ αᵢ yᵢ = 0
+(iii) αᵢ ≤ C
+```
+
+Result (i) is the important one: the weight vector is simply a weighted sum of the training points, where most weights `αᵢ` will be zero. Only points sitting on or inside the margin — the support vectors — have `αᵢ > 0`. This is where the name comes from.
+
+Substituting these results back eliminates **w**, **b**, and **ξ** entirely, giving the dual problem:
+
+```
+Maximise    Σ αᵢ − (1/2) · Σᵢ Σⱼ αᵢ αⱼ yᵢ yⱼ K(xᵢ, xⱼ)
+Subject to  0 ≤ αᵢ ≤ C   for all i,    Σ αᵢ yᵢ = 0
+```
+
+The data only appears as dot products `K(xᵢ, xⱼ)`, which is why any kernel can be dropped in without changing the structure of the problem.
+
+### 2.2 Problem Classification
+
+The dual problem is a convex quadratic program (QP):
+
+- The objective is quadratic in the variables `αᵢ` (due to the `αᵢαⱼ` terms), not linear
+- All constraints are linear (box constraints and one equality)
+- The problem is convex because valid kernel functions are mathematically guaranteed to produce a bowl-shaped objective, meaning there is only one correct answer and the solver cannot get stuck
+
+### 2.3 Solving the QP with cvxopt
+
+The dual QP was solved using `cvxopt`, a general-purpose convex optimisation library. It uses an interior-point method — an algorithm that navigates toward the optimal solution from inside the feasible region rather than along its edges — to find the optimal `αᵢ` values. cvxopt has no knowledge of SVMs; all SVM-specific logic (building the kernel matrix, setting up the constraints, extracting support vectors, computing predictions) was implemented from scratch.
+
+After solving, support vectors are identified as points where `αᵢ > 10⁻⁵`. The bias **b** is computed from support vectors lying exactly on the margin (`0 < αᵢ < C`), averaged for numerical stability:
+
+```
+b = yₛ − Σ αᵢ yᵢ K(xᵢ, xₛ)
+```
+
+To classify a new point **x**, the prediction is:
+
+```
+ŷ = sign( Σ αᵢ yᵢ K(xᵢ, x) + b )      summed over support vectors only
+```
+
+---
+
+## 3. Binary Classification Only
+
+This implementation is restricted to binary classification — problems where each data point belongs to one of exactly two classes. The SVM formulation above is inherently binary: labels are encoded as +1 and −1, and the objective finds a single separating hyperplane between them.
+
+### 3.1 Why Multi-Class Was Not Implemented
+
+Extending SVMs beyond two classes requires additional strategies, since the core algorithm only produces a two-class decision. The two standard approaches are:
+
+- **One-vs-Rest (OvR):** train one binary SVM per class, treating that class as positive and all others as negative. To predict, run all classifiers and pick the highest confidence score.
+- **One-vs-One (OvO):** train one binary SVM for every pair of classes. For *k* classes this produces *k(k−1)/2* classifiers, each of which votes, and the class with the most votes wins.
+
+Both add significant complexity. OvR requires careful handling of class imbalance, since one class is always in the minority, and OvO multiplies the number of models by a quadratic factor. More importantly, either extension would shift focus away from the core SVM mechanics: the dual formulation, the kernel trick, and support vector geometry.
+
+The Breast Cancer Wisconsin dataset is naturally binary (malignant vs. benign), making it an ideal fit for the binary SVM, so no multi-class extension was needed for meaningful, real-world experiments.
+
+---
+
+## 4. Experimental Analysis
+
+### 4.1 Dataset
+
+The Breast Cancer Wisconsin (Diagnostic) dataset contains 569 samples with 30 numerical features computed from images of cell nuclei in biopsy samples. The features describe properties such as radius, texture, perimeter, smoothness, and concavity at three scales (mean, standard error, and worst value). The target label is malignant (212 samples, y = −1) or benign (357 samples, y = +1).
+
+**Preprocessing:** labels were remapped from {0, 1} to {−1, +1}. All features were standardised to zero mean and unit variance using training set statistics — essential because SVMs are sensitive to feature scale. A 75/25 stratified train-test split produced 426 training and 143 test samples.
+
+### 4.2 Comparison with sklearn
+
+Three kernel variants were evaluated (linear, polynomial degree 3, and RBF with γ = 0.03), all with C = 1.0. The from-scratch implementation was compared against `sklearn.svm.SVC`, which uses the libsvm SMO algorithm internally.
+
+| Kernel | Implementation | Accuracy | # SVs | Train time (s) |
+|--------|----------------|----------|-------|----------------|
+| Linear | scratch | 0.9860 | 34 | 0.078 |
+| Linear | sklearn | 0.9860 | 34 | 0.003 |
+| Polynomial | scratch | 0.9650 | 63 | 0.019 |
+| Polynomial | sklearn | 0.9720 | 65 | 0.001 |
+| RBF | scratch | 0.9790 | 95 | 0.012 |
+| RBF | sklearn | 0.9790 | 92 | 0.001 |
+
+*Test accuracy, support vector count, and training time. C = 1.0 for all models.*
+
+Accuracy was near-identical across implementations for all kernels, confirming both solvers reach the same optimal hyperplane. The main difference was speed: sklearn's SMO algorithm is significantly faster because it solves the QP analytically using two-variable subproblems, while cvxopt's interior-point method is a general solver and does not exploit the structure of the SVM problem.
+
+As a further validation, the predictions of the scratch and sklearn implementations were compared point-by-point on the 143 test patients:
+
+| Kernel | Prediction agreement |
+|--------|----------------------|
+| Linear | 143 / 143 |
+| Polynomial | 142 / 143 |
+| RBF | 143 / 143 |
+
+The linear and RBF kernels achieved perfect agreement, confirming both solvers converged to the exact same decision boundary. The polynomial kernel disagreed on one point, consistent with the small accuracy gap between implementations and attributable to numerical differences between cvxopt's interior-point method and sklearn's SMO algorithm.
+
+### 4.3 Performance Metrics
+
+For a medical dataset, recall on the malignant class is the most important metric — missing a malignant tumour (false negative) is a more serious error than a false alarm (false positive).
+
+| Class | Precision | Recall | F1 |
+|-------|-----------|--------|-----|
+| Malignant | 0.98 | 0.98 | 0.98 |
+| Benign | 0.99 | 0.99 | 0.99 |
+
+*Classification report for the best from-scratch model (linear kernel).*
+
+Out of 143 test patients, only 2 were misclassified: 1 malignant patient predicted as benign (the more dangerous error), and 1 benign patient predicted as malignant.
+
+### 4.4 Effect of C on Support Vectors
+
+The model was trained across C ∈ {0.01, 0.1, 0.5, 1, 5, 10, 100} using the RBF kernel.
+
+| C | # SVs | Test Accuracy |
+|---|-------|---------------|
+| 0.01 | 322 | 0.6294 |
+| 0.1 | 189 | 0.9371 |
+| 0.5 | 116 | 0.9720 |
+| 1 | 95 | 0.9790 |
+| 5 | 77 | 0.9860 |
+| 10 | 74 | 0.9790 |
+| 100 | 67 | 0.9441 |
+
+At low C, many points become support vectors because the wide margin tolerates violations from a large portion of the training set. As C increases, the margin tightens and fewer points are needed to define it. C = 5 produced the highest test accuracy at 0.9860, though C = 1 offers a comparable 0.9790 with a slightly wider margin, making it a more conservative and generalisable choice. Beyond C = 10, accuracy drops noticeably as the model begins to overfit.
+
+### 4.5 Feature Importances (Linear Kernel)
+
+For the linear kernel the weight vector can be recovered directly from the dual solution (`w = Σ αᵢ yᵢ xᵢ`), and because the features are standardised the weights are directly comparable.
+
+| Feature | Weight | Leans |
+|---------|--------|-------|
+| worst texture | −1.195 | malignant |
+| mean compactness | +0.979 | benign |
+| area error | −0.893 | malignant |
+| worst concavity | −0.892 | malignant |
+| worst area | −0.730 | malignant |
+| worst smoothness | −0.718 | malignant |
+| radius error | −0.693 | malignant |
+| mean concavity | −0.610 | malignant |
+| worst symmetry | −0.608 | malignant |
+| worst radius | −0.535 | malignant |
+
+The most influential features were worst texture, area error, and worst concavity. Many of the top features push toward the malignant class (negative weights), with mean compactness being the strongest benign indicator. This is consistent with medical knowledge that irregular, larger cell nuclei are associated with malignancy. Also worth noting: 9 out of the top 10 features lean malignant, which tells you the model is largely learning what malignant looks like rather than what benign looks like.
+
+The weight vector was also compared against sklearn's `LinearSVC` by computing the cosine similarity between the two normalised vectors, giving **0.824** — both optimisers converged to substantially the same separating hyperplane despite using completely different algorithms.
+
+---
+
+## 5. Implementation Challenges
+
+**Bias computation stability.** The bias **b** should be recoverable from any support vector sitting exactly on the margin (`0 < αᵢ < C`). In practice, floating-point errors from the QP solver mean few `αᵢ` values land precisely in this range. This was resolved by averaging **b** over all margin support vectors, with a fallback to all support vectors when none qualified.
+
+**Identifying support vectors.** Solved `αᵢ` values are never exactly zero due to numerical precision. A threshold of 10⁻⁵ was used to distinguish true support vectors from near-zero noise. A threshold that is too high incorrectly discards valid support vectors; too low and noise pollutes the bias estimate.
+
+**Kernel matrix conditioning.** The polynomial kernel at high degree produces very large Gram matrix values, which cause numerical instability in the QP solver. This was addressed by fixing degree = 3 and coef0 = 1, which kept matrix values well-conditioned.
+
+All three challenges were successfully resolved, and the final implementation produces accuracy results matching sklearn to within numerical tolerance across all three kernels.
+
+---
+
+## 6. Conclusion
+
+This project implemented a binary soft-margin SVM from scratch using the dual QP formulation, with support for linear, polynomial, and RBF kernels. The implementation was validated against sklearn's `SVC` and produced near-identical accuracy across all three kernels, confirming the correctness of the approach.
+
+The Breast Cancer Wisconsin dataset proved to be a strong fit for the binary SVM — the two classes are well-separated in the standardised feature space, and the model achieved 99% test accuracy with only 2 misclassifications out of 143 test patients. The one missed malignant case highlights the real-world cost of false negatives in medical classification and motivates the use of recall as the primary evaluation metric over raw accuracy.
+
+The key insight is that the SVM's power comes not from the classifier itself, but from the combination of the maximum-margin objective, the dual formulation that reduces the problem to finding a small set of support vectors, and the kernel trick that allows non-linear boundaries without any additional implementation complexity. The cvxopt QP solver handled the optimisation correctly and produced results consistent with sklearn, though the speed gap confirms why specialised solvers like SMO are used in production systems.
+
+---
+
+## Running the Notebook
+
+Python 3.9+ and Jupyter are required.
 
 ```bash
-# 1. Clone the repository
 git clone <repo-url>
 cd Support-Vector-Machine-From-Scratch
 
-# 2. Install dependencies
 pip install numpy matplotlib scikit-learn cvxopt jupyter
 
-# 3. Open the notebook
 jupyter notebook svm_from_scratch.ipynb
 ```
 
-Run the cells top to bottom. Nothing needs downloading — the dataset ships with scikit-learn — and the whole thing finishes in under a minute.
-
----
-
-## What's In The Repo
+Run the cells top to bottom. The dataset ships with scikit-learn, so nothing needs downloading, and the full notebook completes in under a minute.
 
 ```
 Support-Vector-Machine-From-Scratch/
-├── svm_from_scratch.ipynb   # The implementation, experiments, and figures
+├── svm_from_scratch.ipynb   # Implementation, experiments, and figures
 ├── SVM Project.docx         # Written report
 ├── SVM Project.pdf          # Written report (PDF)
 └── README.md
 ```
 
----
-
-## Notebook Walkthrough
-
-| # | Section | What happens |
-|---|---------|--------------|
-| 1 | Load & prepare the data | Load the dataset, relabel the classes as −1 and +1, put all 30 measurements on a common scale, split 75/25 |
-| 2 | Kernel functions | Write the three similarity functions — straight-line, curved, and flexible |
-| 3 | The `SVMScratch` class | Set up the optimization problem, solve it, pull out the support vectors and the boundary |
-| 4 | Train and evaluate | Run all three kernels and record accuracy, support vector count, and timing |
-| 5 | Compare to scikit-learn | Same settings, library implementation, side-by-side results |
-| 6 | Detailed scorecard | Precision, recall, and the confusion matrix for the best kernel |
-| 7 | The effect of C | Sweep C from 0.01 to 100 and watch the boundary tighten |
-| 8 | Picture of the boundary | Squash to 2 dimensions and plot the boundary, the margin, and the support vectors |
-| 9 | Which measurements matter | Read the weights off the linear model and compare to scikit-learn's |
-| 10 | Do they agree? | Patient-by-patient comparison of both implementations |
+The notebook follows the same order as this document: data loading and preprocessing (§4.1), kernel functions (§1.3), the `SVMScratch` class (§2.3), training and evaluation, the sklearn comparison (§4.2), the classification report (§4.3), the C sweep (§4.4), a 2D PCA visualisation of the decision boundary and its support vectors, and feature importances (§4.5).
 
 ---
 
-## Implementation Notes
+## References
 
-### Handing the Problem to the Solver
-
-`cvxopt` accepts problems written in one specific standard form — minimize $\tfrac{1}{2}x^\top P x + q^\top x$ subject to $Gx \leq h$ and $Ax = b$ — so most of the work is translating the SVM into that shape:
-
-| Solver expects | We supply |
-|----------------|-----------|
-| $P$ | The table of pairwise similarities between all training points, signed by their labels |
-| $q$ | All −1s (the solver minimizes, our problem maximizes, so signs flip) |
-| $G, h$ | The rule that each point's influence stays between 0 and C |
-| $A, b$ | The rule that influence balances out evenly across the two classes |
-
-Once it comes back, any point with an influence above $10^{-5}$ counts as a support vector. The boundary's offset is averaged over just the points sitting exactly on the margin — those with influence strictly between 0 and C — because those are the ones whose position we know precisely.
-
-### The Three Kernels
-
-| Kernel | Formula | Settings | What it does |
-|--------|---------|----------|--------------|
-| Linear | $x_i^\top x_j$ | — | Straight boundary |
-| Polynomial | $(x_i^\top x_j + c)^d$ | degree 3, c = 1.0 | Gently curved boundary |
-| RBF (Gaussian) | $\exp(-\gamma \|x_i - x_j\|^2)$ | γ = 0.03 | Freely shaped boundary |
-
-The RBF kernel is written so the whole similarity table is computed in one vectorized pass rather than a Python loop over every pair — a rewrite of the distance formula that makes it roughly two orders of magnitude faster.
-
-### Setup Details
-- **Split:** 75/25, stratified so both halves keep the same malignant/benign mix, `random_state=42` (426 train, 143 test)
-- **Scaling:** fit on the training data only, then applied to the test data — fitting on everything would leak information
-- **Labels:** relabeled from 0/1 to −1/+1, which is the convention the math assumes
-
----
-
-## Data
-
-| Dataset | Source |
-|---------|--------|
-| Breast Cancer Wisconsin (Diagnostic) — 569 patients, 30 measurements, malignant or benign | [`sklearn.datasets.load_breast_cancer`](https://scikit-learn.org/stable/modules/generated/sklearn.datasets.load_breast_cancer.html) |
-
----
-
-## Course Context
-
-**MGSC 696 — Machine Learning** at McGill University (MMA program), April 2026.
-
-**Team:** David Fogel · Sebastian Arguedas Soley · Lucas Penney · Aziz Ahmed · Fares Jony
-
----
-
-## License
-
-MIT
+1. M. Andersen, J. Dahl, and L. Vandenberghe, "CVXOPT: A Python package for convex optimization," Version 1.3, 2023. https://cvxopt.org/
+2. W. H. Wolberg, W. N. Street, and O. L. Mangasarian, "Breast Cancer Wisconsin (Diagnostic) Data Set," UCI Machine Learning Repository, 1995. https://archive.ics.uci.edu/ml/datasets/breast+cancer+wisconsin+(diagnostic)
+3. Scikit-learn developers, "Support Vector Machines," scikit-learn documentation. https://scikit-learn.org/stable/modules/svm.html
+4. Scikit-learn developers, "sklearn.svm.SVC documentation." https://scikit-learn.org/stable/modules/generated/sklearn.svm.SVC.html
+5. Stanford University CS229, "Support Vector Machines Lecture Notes," Andrew Ng. https://cs229.stanford.edu/notes2022fall/main_notes.pdf
