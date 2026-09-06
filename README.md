@@ -1,13 +1,13 @@
 # Support Vector Machine From Scratch
 
-> **MGSC 696 — Machine Learning** | McGill MMA
+> **MGSC 696** | McGill MMA
 > Building an SVM classifier from the ground up, then checking it against scikit-learn
 
 ---
 
 ## What This Project Does
 
-A Support Vector Machine is a classifier that separates two groups by drawing the boundary that leaves the widest possible gap between them. This project builds one from scratch — no SVM library — and uses it to tell malignant tumors from benign ones in the Breast Cancer Wisconsin dataset (569 patients, 30 measurements each).
+A Support Vector Machine is a classifier that separates two groups by drawing the boundary that leaves the widest possible gap between them. This project builds one from scratch — no SVM library — and uses it to classify malignant tumours from benign ones in the Breast Cancer Wisconsin dataset (569 patients, 30 measurements each).
 
 The only outside help we allow ourselves is a general-purpose optimizer called `cvxopt`, which solves the math problem at the center of an SVM. Everything specific to SVMs — the kernels, the training routine, the prediction step — is written by hand. We then run scikit-learn's `SVC` on the same data to check that our version gets the same answers.
 
